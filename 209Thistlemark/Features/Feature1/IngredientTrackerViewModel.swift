@@ -19,6 +19,11 @@ final class IngredientTrackerViewModel: ObservableObject {
     @Published var showSuccessOverlay = false
     @Published var shakeTrigger: CGFloat = 0
     @Published var inlineError: String?
+    @Published var randomPickIngredient: Ingredient?
+    @Published var showRandomPickEmptyAlert = false
+    @Published var featuredIngredientName: String?
+    @Published var highlightedIngredientID: UUID?
+    @Published var scrollToIngredientID: UUID?
 
     func filteredIngredients(from store: AppDataStore) -> [Ingredient] {
         let source: [Ingredient]
@@ -61,6 +66,38 @@ final class IngredientTrackerViewModel: ObservableObject {
         FeedbackManager.tap()
         store.ingredients.removeAll(where: { $0.id == ingredient.id })
         store.recalculateItemsCreated()
+    }
+
+    func performRandomPick(in store: AppDataStore) {
+        FeedbackManager.tap()
+        guard let picked = store.ingredients.randomElement() else {
+            showRandomPickEmptyAlert = true
+            FeedbackManager.warning()
+            return
+        }
+
+        onlyMissing = false
+        searchText = ""
+        filterMode = .all
+        featuredIngredientName = picked.name
+        expandedIngredientIDs.insert(picked.id)
+        highlightedIngredientID = picked.id
+        scrollToIngredientID = picked.id
+        store.markIngredientViewed(picked.name)
+        store.completeSession()
+        randomPickIngredient = picked
+        FeedbackManager.complete()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.highlightedIngredientID = nil
+        }
+    }
+
+    func syncFeaturedIngredient(from store: AppDataStore) {
+        let top = store.viewCounts.sorted { $0.value > $1.value }.first?.key
+        if featuredIngredientName == nil {
+            featuredIngredientName = top
+        }
     }
 
     func toggleExpansion(_ ingredient: Ingredient, in store: AppDataStore) {

@@ -3,23 +3,33 @@ import SwiftUI
 struct IngredientTrackerView: View {
     @EnvironmentObject private var store: AppDataStore
     @StateObject private var viewModel = IngredientTrackerViewModel()
-    @State private var featuredIngredientName: String?
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottomTrailing) {
                 AppBackgroundView()
-                ScrollView {
-                    VStack(spacing: 12) {
-                        heroWidget
-                        pantrySummary
-                        quickWidgets
-                        searchField
-                        filterPicker
-                        missingFilterToggle
-                        contentList
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 12) {
+                            heroWidget
+                            pantrySummary
+                            quickWidgets
+                            searchField
+                            filterPicker
+                            missingFilterToggle
+                            contentList
+                        }
+                        .padding(.bottom, 88)
                     }
-                    .padding(.bottom, 88)
+                    .onChange(of: viewModel.scrollToIngredientID) { _, ingredientID in
+                        guard let ingredientID else { return }
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            proxy.scrollTo(ingredientID, anchor: .center)
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            viewModel.scrollToIngredientID = nil
+                        }
+                    }
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
@@ -32,6 +42,17 @@ struct IngredientTrackerView: View {
             }
             .navigationTitle("Ingredient Tracker")
             .navigationBarTitleDisplayMode(.inline)
+            .alert("No Ingredients Yet", isPresented: $viewModel.showRandomPickEmptyAlert) {
+                Button("Add Ingredient") {
+                    viewModel.openNewIngredientForm()
+                }
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Add at least one ingredient before using Random Pick.")
+            }
+            .sheet(item: $viewModel.randomPickIngredient) { ingredient in
+                RandomPickResultSheet(ingredient: ingredient)
+            }
             .sheet(isPresented: $viewModel.isPresentingEditor) {
                 IngredientEditorSheet(
                     ingredient: viewModel.editingIngredient,
@@ -85,7 +106,7 @@ struct IngredientTrackerView: View {
                         .font(.caption)
                         .foregroundStyle(Color("AppTextSecondary"))
                         .lineLimit(3)
-                    if let featuredIngredientName {
+                    if let featuredIngredientName = viewModel.featuredIngredientName {
                         Text("Today focus: \(featuredIngredientName)")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(Color("AppAccent"))
@@ -97,10 +118,10 @@ struct IngredientTrackerView: View {
             }
         }
         .onAppear {
-            updateFeaturedIngredient()
+            viewModel.syncFeaturedIngredient(from: store)
         }
         .onChange(of: store.viewCounts) { _, _ in
-            updateFeaturedIngredient()
+            viewModel.syncFeaturedIngredient(from: store)
         }
     }
 
@@ -126,10 +147,7 @@ struct IngredientTrackerView: View {
                 subtitle: "Inspire cooking",
                 icon: "sparkles"
             ) {
-                FeedbackManager.tap()
-                if let random = store.ingredients.randomElement() {
-                    featuredIngredientName = random.name
-                }
+                viewModel.performRandomPick(in: store)
             }
         }
     }
@@ -152,6 +170,7 @@ struct IngredientTrackerView: View {
             .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
             .padding(10)
             .appDepthCard(cornerRadius: 14, elevated: false)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -213,6 +232,7 @@ struct IngredientTrackerView: View {
             LazyVStack(spacing: 10) {
                 ForEach(ingredients) { ingredient in
                     ingredientCard(ingredient)
+                        .id(ingredient.id)
                         .swipeActions(edge: .leading, allowsFullSwipe: false) {
                             Button("Edit") {
                                 viewModel.openEdit(ingredient)
@@ -231,6 +251,7 @@ struct IngredientTrackerView: View {
 
     private func ingredientCard(_ ingredient: Ingredient) -> some View {
         let isExpanded = viewModel.expandedIngredientIDs.contains(ingredient.id)
+        let isHighlighted = viewModel.highlightedIngredientID == ingredient.id
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
                 Image(systemName: ingredient.sfSymbol)
@@ -349,11 +370,12 @@ struct IngredientTrackerView: View {
         }
         .padding(12)
         .appDepthCard(cornerRadius: 14, elevated: false)
-    }
-
-    private func updateFeaturedIngredient() {
-        let top = store.viewCounts.sorted { $0.value > $1.value }.first?.key
-        featuredIngredientName = top
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(isHighlighted ? Color("AppAccent") : Color.clear, lineWidth: 2)
+        )
+        .scaleEffect(isHighlighted ? 1.02 : 1)
+        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: isHighlighted)
     }
 
     private var addButton: some View {
@@ -373,6 +395,71 @@ struct IngredientTrackerView: View {
                 .shadow(color: Color.black.opacity(0.22), radius: 6, x: 0, y: 4)
         }
         .accessibilityLabel("Add ingredient")
+    }
+}
+
+private struct RandomPickResultSheet: View {
+    let ingredient: Ingredient
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                AppBackgroundView()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        AppCard {
+                            HStack(spacing: 12) {
+                                Image(systemName: ingredient.sfSymbol)
+                                    .font(.system(size: 34, weight: .semibold))
+                                    .foregroundStyle(Color("AppPrimary"))
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Random Pick")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(Color("AppAccent"))
+                                    Text(ingredient.name)
+                                        .font(.title2.bold())
+                                        .foregroundStyle(Color("AppTextPrimary"))
+                                }
+                            }
+                        }
+
+                        detailCard(title: "Description", body: ingredient.details)
+                        detailCard(title: "Usage Tips", body: ingredient.usage.isEmpty ? "No usage tips added yet." : ingredient.usage)
+                        detailCard(title: "Nutrition", body: ingredient.nutritionInfo.isEmpty ? "No nutrition details added yet." : ingredient.nutritionInfo)
+
+                        if !ingredient.pairings.isEmpty {
+                            detailCard(title: "Pairs Well With", body: ingredient.pairings.joined(separator: ", "))
+                        }
+                    }
+                    .padding(14)
+                }
+            }
+            .navigationTitle("Your Pick")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        FeedbackManager.tap()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func detailCard(title: String, body: String) -> some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(Color("AppAccent"))
+                Text(body)
+                    .foregroundStyle(Color("AppTextPrimary"))
+                    .font(.body)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 
